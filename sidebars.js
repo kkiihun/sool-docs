@@ -15,6 +15,10 @@ const sidebars = {
       label: "SOOL",
       items: [
         "sool/architecture",
+          "sool/data-model",
+          "sool/api",
+          "sool/auth-design",
+          "sool/analytics",
       ],
     },
   ],
