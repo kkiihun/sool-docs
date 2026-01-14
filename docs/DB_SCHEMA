@@ -1,0 +1,153 @@
+# sool 프로젝트 DB 표준(기준) v1 — A안
+
+## 1) 핵심 정책 (반드시 고정)
+
+* **sool은 마스터 데이터**다. (1226건 유지)
+* **sense는 선택 데이터**다.
+
+  * 관계 정책: **sool 1 : sense 0~1 (운영 정책)**
+  * 스키마상 1:N도 가능하지만, v1에서는 “대표 sense 1개”만 둔다.
+* 프론트/백엔드는 **sense가 없는 sool이 정상**이어야 한다.
+
+  * 즉, 조회 시 `LEFT JOIN` / 프론트는 null-safe 렌더링이 표준
+
+---
+
+## 2) 현재 DB 구조(요약)
+
+### tables
+
+* `users`
+* `sool`
+* `sense`
+
+### 관계
+
+* `sense.sool_id` → `sool.id` (NOT NULL, FK)
+* `sense.user_id` → `users.id` (NULL 가능, FK)
+
+### 현황 (2026-01-14 기준 스냅샷)
+
+* sool: 1226
+* sense: 38
+* sense 중복(sool_id당 2개 이상): 없음 → 현재 운영도 0~1 정책과 일치
+
+---
+
+## 3) 표준 조회 규칙 (꼬임 방지)
+
+### “sool + sense” 조회는 항상 LEFT JOIN
+
+* DB 관점: `sool`이 기준이고 `sense`는 있으면 붙인다.
+* API 관점: `sense`가 없으면 `sense=null` 또는 감각 필드가 null이어도 정상.
+
+✅ 검증 쿼리(표준)
+
+```sql
+SELECT
+  s.id, s.name,
+  se.rating, se.created_at
+FROM sool s
+LEFT JOIN sense se ON se.sool_id = s.id
+ORDER BY s.id DESC
+LIMIT 20;
+```
+
+---
+
+## 4) 표준 데이터 적재(Import) 규칙
+
+### 정본(Source of Truth)
+
+* `sool` 정본: CSV/원본 데이터셋 (ETL로만 DB에 반영)
+* `sense` 정본:
+
+  * v1에서는 “운영 데이터” 또는 “선택 seed” (필수 적재 아님)
+
+### 금지 규칙
+
+* 운영 중 수동 UPDATE로 데이터 정합성을 맞추지 않는다.
+
+  * **수정은 seed/ETL 스크립트를 고치고 재적재**가 원칙.
+
+---
+
+## 5) “DB가 꼬이지 않게” 하는 리셋/초기화 표준
+
+A안에서는 **DB를 자주 TRUNCATE 해서 38/38 맞추는 흐름을 버린다.**
+
+### 표준 절차 (Docker 기준)
+
+1. **DB 볼륨 유지**가 원칙 (1226 유지)
+2. 스키마 변경 필요 시:
+
+   * (권장) 마이그레이션 도구(Alembic)로만 변경
+   * 최소한 `schema.sql` 버전화
+3. 데이터 재적재가 필요하면:
+
+   * `sool`은 “덮어쓰기”가 아니라 **업서트(upsert) 기준**으로 설계(추후)
+
+---
+
+## 6) 스키마 정리(중복 인덱스 제거) — “표준 정비 항목”
+
+현재 스키마에는 **PK와 중복되는 인덱스**가 있어. (혼란/불필요)
+
+### 정리 대상
+
+* sool: `ix_sool_id` (PK가 이미 id 인덱스)
+* sense: `ix_sense_id`
+* users: `ix_users_id`
+
+✅ 표준 정비 SQL(원할 때 실행)
+
+```sql
+ALTER TABLE sool  DROP INDEX ix_sool_id;
+ALTER TABLE sense DROP INDEX ix_sense_id;
+ALTER TABLE users DROP INDEX ix_users_id;
+```
+
+> 이건 “지금 당장 필수”는 아니고, 표준화 작업으로 체크해두면 됨.
+
+---
+
+# 7) A안에서 프론트/백엔드가 반드시 지켜야 할 구현 포인트
+
+## Backend (FastAPI)
+
+* 상세 조회에서 `sool`만 존재해도 200 OK
+* sense 없으면 `sense: null`(또는 감각 필드 null)로 응답
+* 검색/리스트는 sense join을 optional로
+
+## Frontend (Next.js)
+
+* 레이더차트/점수 UI는 **null-safe**
+
+  * sense 없으면 “아직 감각 데이터 없음” 상태 UI 표시
+  * 0으로 채우지 말 것(0점과 데이터 없음은 의미가 다름)
+
+---
+
+# 8) 오늘 바로 할 “운영 점검” 체크리스트
+
+아래 3개가 정상 나오면 A안 표준이 제대로 적용된 거야.
+
+```sql
+-- 1) sool, sense 현황
+SELECT COUNT(*) AS sool_cnt FROM sool;
+SELECT COUNT(*) AS sense_cnt FROM sense;
+
+-- 2) sense 중복 방지(운영 정책 준수 여부)
+SELECT sool_id, COUNT(*) cnt
+FROM sense
+GROUP BY sool_id
+HAVING cnt > 1;
+
+-- 3) sense 없는 sool이 존재하는지(정상임)
+SELECT COUNT(*) AS sool_without_sense
+FROM sool s
+LEFT JOIN sense se ON se.sool_id = s.id
+WHERE se.id IS NULL;
+```
+
+---
